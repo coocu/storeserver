@@ -23,9 +23,7 @@ class Store(BaseModel):
     address: str | None = ""
     kakaoOpenChat: str | None = ""
     phoneNumber: str | None = ""
-
-    # 🔥 신규 추가 — 등록일
-    createdAt: str | None = None
+    createdAt: str | None = None   # 🔥 등록일자
 
 
 class DeleteReq(BaseModel):
@@ -124,7 +122,7 @@ def update_store(store: Store):
     updated = False
 
     for i, s in enumerate(data):
-        if s["name"] == store.name and s["region"] == store.region":
+        if s["name"] == store.name and s["region"] == store.region:
 
             obj = store.dict()
 
@@ -175,7 +173,7 @@ def export_excel():
     if not data:
         raise HTTPException(404, "저장된 매장이 없습니다")
 
-    # 정렬 기준 (최근 등록순)
+    # 등록일자 최신순 정렬
     data = sorted(
         data,
         key=lambda x: x.get("createdAt", ""),
