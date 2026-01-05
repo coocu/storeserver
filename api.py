@@ -28,17 +28,19 @@ class DeleteReq(BaseModel):
 
 
 # =========================
-# 파일 IO
+# 파일 IO (BOM 자동 제거)
 # =========================
 def load_data():
     if not os.path.exists(DATA_FILE):
         return []
 
-    with open(DATA_FILE, encoding="utf-8") as f:
+    # utf-8-sig → BOM 포함 JSON 도 안전하게 로드
+    with open(DATA_FILE, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
 def save_data(data):
+    # 저장은 항상 utf-8 로
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -55,13 +57,13 @@ def normalize(store: dict):
 
 # =========================
 # STORE LIST API
-# (앱 JSON 파서와 100% 호환)
+# (앱 파서와 100% 동일 포맷 출력)
 # =========================
 @app.get("/api/stores")
 def get_stores():
     data = load_data()
 
-    # None 값이 있으면 optString() 이 "" 로 받도록 통일
+    # optString() 대응 위해 모든 값 정규화
     data = [normalize(s) for s in data]
 
     text = json.dumps(
@@ -119,7 +121,7 @@ def update_store(store: Store):
             break
 
     if not updated:
-            raise HTTPException(404, "해당 매장을 찾을 수 없습니다")
+        raise HTTPException(404, "해당 매장을 찾을 수 없습니다")
 
     save_data(data)
 
