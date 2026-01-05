@@ -1,12 +1,15 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from pydantic import BaseModel
+from datetime import datetime
 import json
 import os
+import pandas as pd
 
 app = FastAPI()
 
 DATA_FILE = "stores.json"
+EXCEL_FILE = "stores_export.xlsx"
 
 
 # =========================
@@ -21,6 +24,9 @@ class Store(BaseModel):
     kakaoOpenChat: str | None = ""
     phoneNumber: str | None = ""
 
+    # 🔥 신규 추가 — 등록일
+    createdAt: str | None = None
+
 
 class DeleteReq(BaseModel):
     name: str
@@ -28,19 +34,17 @@ class DeleteReq(BaseModel):
 
 
 # =========================
-# 파일 IO (BOM 자동 제거)
+# 파일 IO
 # =========================
 def load_data():
     if not os.path.exists(DATA_FILE):
         return []
 
-    # utf-8-sig → BOM 포함 JSON 도 안전하게 로드
     with open(DATA_FILE, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
 def save_data(data):
-    # 저장은 항상 utf-8 로
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -56,14 +60,12 @@ def normalize(store: dict):
 
 
 # =========================
-# STORE LIST API
-# (앱 파서와 100% 동일 포맷 출력)
+# STORE LIST API (JSON)
 # =========================
 @app.get("/api/stores")
 def get_stores():
     data = load_data()
 
-    # optString() 대응 위해 모든 값 정규화
     data = [normalize(s) for s in data]
 
     text = json.dumps(
@@ -92,6 +94,7 @@ def add_store(store: Store):
 
     data = load_data()
 
+    # 중복 방지 (name + region 기준)
     for s in data:
         if s["name"] == store.name and s["region"] == store.region:
             raise HTTPException(
@@ -99,7 +102,13 @@ def add_store(store: Store):
                 "이미 존재하는 매장입니다 (수정 기능을 사용하세요)"
             )
 
-    data.append(normalize(store.dict()))
+    obj = store.dict()
+
+    # 🔥 최초 등록일 자동 기록
+    if not obj.get("createdAt"):
+        obj["createdAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    data.append(normalize(obj))
     save_data(data)
 
     return {"status": "added", "count": len(data)}
@@ -115,8 +124,14 @@ def update_store(store: Store):
     updated = False
 
     for i, s in enumerate(data):
-        if s["name"] == store.name and s["region"] == store.region:
-            data[i] = normalize(store.dict())
+        if s["name"] == store.name and s["region"] == store.region":
+
+            obj = store.dict()
+
+            # 🔥 기존 등록일 보존
+            obj["createdAt"] = s.get("createdAt", "")
+
+            data[i] = normalize(obj)
             updated = True
             break
 
@@ -147,3 +162,55 @@ def delete_store(req: DeleteReq):
     save_data(new_data)
 
     return {"status": "deleted", "count": len(new_data)}
+
+
+# =========================
+# ADMIN — EXPORT EXCEL
+# =========================
+@app.get("/admin/export/excel")
+def export_excel():
+
+    data = load_data()
+
+    if not data:
+        raise HTTPException(404, "저장된 매장이 없습니다")
+
+    # 정렬 기준 (최근 등록순)
+    data = sorted(
+        data,
+        key=lambda x: x.get("createdAt", ""),
+        reverse=True
+    )
+
+    df = pd.DataFrame(data)
+
+    # 🔥 열 순서 정리
+    cols = [
+        "name", "region",
+        "lat", "lng",
+        "address",
+        "kakaoOpenChat",
+        "phoneNumber",
+        "createdAt"
+    ]
+
+    df = df.reindex(columns=cols)
+
+    df.rename(columns={
+        "name": "매장명",
+        "region": "지역",
+        "lat": "위도",
+        "lng": "경도",
+        "address": "주소",
+        "kakaoOpenChat": "카카오 오픈채팅",
+        "phoneNumber": "전화번호",
+        "createdAt": "등록일자"
+    }, inplace=True)
+
+    df.to_excel(EXCEL_FILE, index=False)
+
+    return FileResponse(
+        EXCEL_FILE,
+        media_type="application/vnd.ms-excel",
+        filename="store_list.xlsx"
+    )
