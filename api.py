@@ -74,14 +74,14 @@ def purge_expired(data: list):
             kept.append(s)
             continue
 
-        # 날짜 파싱 실패 시 안전하게 유지
+        # 날짜 파싱 실패 시 유지
         try:
             dt = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
         except:
             kept.append(s)
             continue
 
-        # 6개월 미경과 → 계속 휴지통에 보관
+        # 6개월 미경과 → 휴지통 유지
         if now - dt < timedelta(days=PURGE_MONTHS * 30):
             kept.append(s)
 
@@ -109,13 +109,13 @@ def get_stores():
     body = text.encode("utf-8")
 
     return Response(
-        content=body,
-        media_type="application/json; charset=utf-8",
-        headers={
-            "Content-Length": str(len(body)),
-            "Cache-Control": "no-cache"
-        }
-    )
+            content=body,
+            media_type="application/json; charset=utf-8",
+            headers={
+                "Content-Length": str(len(body)),
+                "Cache-Control": "no-cache"
+            }
+        )
 
 
 # =========================
@@ -128,7 +128,7 @@ def add_store(store: Store):
 
     for s in data:
         if s["name"] == store.name and s["region"] == store.region:
-            raise HTTPException(400, "이미 존재하는 매장입니다 (수정 기능을 사용하세요)")
+            raise HTTPException(400, "이미 존재하는 매장입니다 (수정 기능 사용)")
 
     obj = store.dict()
 
@@ -158,10 +158,7 @@ def update_store(store: Store):
 
             obj = store.dict()
 
-            # 기존 createdAt 유지
             obj["createdAt"] = s.get("createdAt", "")
-
-            # 삭제 상태도 유지
             obj["deletedAt"] = s.get("deletedAt", None)
 
             data[i] = normalize(obj)
@@ -188,7 +185,7 @@ def delete_store(req: DeleteReq):
         if s["name"] == req.name and s["region"] == req.region:
 
             if s.get("deletedAt"):
-                raise HTTPException(400, "이미 삭제된 매장입니다")
+                raise HTTPException(400, "이미 휴지통 상태입니다")
 
             s["deletedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             found = True
@@ -228,15 +225,36 @@ def restore_store(req: DeleteReq):
 
 
 # =========================
-# ADMIN — EXPORT EXCEL
-# (삭제되지 않은 데이터만)
+# ADMIN — 휴지통 목록 API (신규)
+# =========================
+@app.get("/admin/trash")
+def get_trash():
+
+    data = purge_expired(load_data())
+
+    trash = [
+        s for s in data
+        if s.get("deletedAt")
+    ]
+
+    # 삭제일 최신순 정렬
+    trash = sorted(
+        trash,
+        key=lambda x: x.get("deletedAt", ""),
+        reverse=True
+    )
+
+    return trash
+
+
+# =========================
+# ADMIN — EXPORT EXCEL (삭제되지 않은 데이터만)
 # =========================
 @app.get("/admin/export/excel")
 def export_excel():
 
     data = purge_expired(load_data())
 
-    # 삭제 안된 매장만 엑셀 출력
     data = [
         s for s in data
         if not s.get("deletedAt")
