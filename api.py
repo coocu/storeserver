@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, FileResponse
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 import pandas as pd
@@ -10,6 +10,7 @@ app = FastAPI()
 
 DATA_FILE = "stores.json"
 EXCEL_FILE = "stores_export.xlsx"
+PURGE_MONTHS = 6   # 완전 삭제 대기기간 (개월)
 
 
 # =========================
@@ -23,7 +24,8 @@ class Store(BaseModel):
     address: str | None = ""
     kakaoOpenChat: str | None = ""
     phoneNumber: str | None = ""
-    createdAt: str | None = None   # 🔥 등록일자
+    createdAt: str | None = None
+    deletedAt: str | None = None   # 휴지통 삭제일
 
 
 class DeleteReq(BaseModel):
@@ -58,20 +60,52 @@ def normalize(store: dict):
 
 
 # =========================
+# 6개월 지난 삭제 항목 자동 영구삭제
+# =========================
+def purge_expired(data: list):
+    now = datetime.now()
+    kept = []
+
+    for s in data:
+        deleted_at = s.get("deletedAt")
+
+        # 삭제되지 않은 항목 → 유지
+        if not deleted_at:
+            kept.append(s)
+            continue
+
+        # 날짜 파싱 실패 시 안전하게 유지
+        try:
+            dt = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
+        except:
+            kept.append(s)
+            continue
+
+        # 6개월 미경과 → 계속 휴지통에 보관
+        if now - dt < timedelta(days=PURGE_MONTHS * 30):
+            kept.append(s)
+
+        # 6개월 경과 → 완전 삭제 (버림)
+
+    save_data(kept)
+    return kept
+
+
+# =========================
 # STORE LIST API (JSON)
 # =========================
 @app.get("/api/stores")
 def get_stores():
-    data = load_data()
+    data = purge_expired(load_data())
 
-    data = [normalize(s) for s in data]
+    # 삭제 안 된 것만 내려보냄
+    data = [
+        normalize(s)
+        for s in data
+        if not s.get("deletedAt")
+    ]
 
-    text = json.dumps(
-        data,
-        ensure_ascii=False,
-        indent=2
-    )
-
+    text = json.dumps(data, ensure_ascii=False, indent=2)
     body = text.encode("utf-8")
 
     return Response(
@@ -92,19 +126,17 @@ def add_store(store: Store):
 
     data = load_data()
 
-    # 중복 방지 (name + region 기준)
     for s in data:
         if s["name"] == store.name and s["region"] == store.region:
-            raise HTTPException(
-                400,
-                "이미 존재하는 매장입니다 (수정 기능을 사용하세요)"
-            )
+            raise HTTPException(400, "이미 존재하는 매장입니다 (수정 기능을 사용하세요)")
 
     obj = store.dict()
 
-    # 🔥 최초 등록일 자동 기록
     if not obj.get("createdAt"):
         obj["createdAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 신규 추가는 삭제상태 아님
+    obj["deletedAt"] = None
 
     data.append(normalize(obj))
     save_data(data)
@@ -126,8 +158,11 @@ def update_store(store: Store):
 
             obj = store.dict()
 
-            # 🔥 기존 등록일 보존
+            # 기존 createdAt 유지
             obj["createdAt"] = s.get("createdAt", "")
+
+            # 삭제 상태도 유지
+            obj["deletedAt"] = s.get("deletedAt", None)
 
             data[i] = normalize(obj)
             updated = True
@@ -137,43 +172,79 @@ def update_store(store: Store):
         raise HTTPException(404, "해당 매장을 찾을 수 없습니다")
 
     save_data(data)
-
     return {"status": "updated"}
 
 
 # =========================
-# ADMIN — DELETE
+# ADMIN — SOFT DELETE (휴지통 이동)
 # =========================
 @app.post("/admin/delete")
 def delete_store(req: DeleteReq):
 
     data = load_data()
+    found = False
 
-    new_data = [
-        s for s in data
-        if not (s["name"] == req.name and s["region"] == req.region)
-    ]
+    for s in data:
+        if s["name"] == req.name and s["region"] == req.region:
 
-    if len(new_data) == len(data):
+            if s.get("deletedAt"):
+                raise HTTPException(400, "이미 삭제된 매장입니다")
+
+            s["deletedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            found = True
+            break
+
+    if not found:
         raise HTTPException(404, "삭제 대상이 없습니다")
 
-    save_data(new_data)
+    save_data(data)
+    return {"status": "soft-deleted"}
 
-    return {"status": "deleted", "count": len(new_data)}
+
+# =========================
+# ADMIN — RESTORE (복구)
+# =========================
+@app.post("/admin/restore")
+def restore_store(req: DeleteReq):
+
+    data = load_data()
+    restored = False
+
+    for s in data:
+        if s["name"] == req.name and s["region"] == req.region:
+
+            if not s.get("deletedAt"):
+                raise HTTPException(400, "삭제 상태가 아닙니다")
+
+            s["deletedAt"] = None
+            restored = True
+            break
+
+    if not restored:
+        raise HTTPException(404, "복구 대상이 없습니다")
+
+    save_data(data)
+    return {"status": "restored"}
 
 
 # =========================
 # ADMIN — EXPORT EXCEL
+# (삭제되지 않은 데이터만)
 # =========================
 @app.get("/admin/export/excel")
 def export_excel():
 
-    data = load_data()
+    data = purge_expired(load_data())
+
+    # 삭제 안된 매장만 엑셀 출력
+    data = [
+        s for s in data
+        if not s.get("deletedAt")
+    ]
 
     if not data:
-        raise HTTPException(404, "저장된 매장이 없습니다")
+        raise HTTPException(404, "엑셀로 내보낼 매장이 없습니다")
 
-    # 등록일자 최신순 정렬
     data = sorted(
         data,
         key=lambda x: x.get("createdAt", ""),
@@ -182,7 +253,6 @@ def export_excel():
 
     df = pd.DataFrame(data)
 
-    # 🔥 열 순서 정리
     cols = [
         "name", "region",
         "lat", "lng",
