@@ -5,12 +5,20 @@ from datetime import datetime, timedelta
 import json
 import os
 import pandas as pd
+from pathlib import Path
+
 
 app = FastAPI()
 
-DATA_FILE = "stores.json"
-EXCEL_FILE = "stores_export.xlsx"
+DATA_DIR   = Path("/data")
+DATA_FILE  = DATA_DIR / "stores.json"
+EXCEL_FILE = DATA_DIR / "stores_export.xlsx"
 PURGE_MONTHS = 6   # 완전 삭제 대기기간 (개월)
+
+# 폴더 & 파일 자동 생성
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+if not DATA_FILE.exists():
+    DATA_FILE.write_text("[]", encoding="utf-8")
 
 
 # =========================
